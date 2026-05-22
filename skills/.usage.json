@@ -1,0 +1,67 @@
+{
+  "ezlynx-operations": {
+    "archived_at": null,
+    "created_at": "2026-05-21T04:45:51.114294+00:00",
+    "created_by": null,
+    "last_patched_at": "2026-05-22T13:44:34.259778+00:00",
+    "last_used_at": "2026-05-22T13:39:29.077938+00:00",
+    "last_viewed_at": "2026-05-22T13:39:29.076578+00:00",
+    "patch_count": 78,
+    "pinned": false,
+    "state": "active",
+    "use_count": 39,
+    "view_count": 39
+  },
+  "libertas-agency-ops": {
+    "archived_at": null,
+    "created_at": "2026-05-20T21:43:27.020637+00:00",
+    "created_by": "agent",
+    "last_patched_at": "2026-05-22T06:49:54.714601+00:00",
+    "last_used_at": "2026-05-22T06:49:33.799610+00:00",
+    "last_viewed_at": "2026-05-22T06:49:33.797937+00:00",
+    "patch_count": 96,
+    "pinned": false,
+    "state": "active",
+    "use_count": 37,
+    "view_count": 37
+  },
+  "libertas-daily-sync": {
+    "archived_at": null,
+    "created_at": "2026-05-21T22:49:10.844154+00:00",
+    "created_by": null,
+    "last_patched_at": "2026-05-22T13:39:59.145916+00:00",
+    "last_used_at": "2026-05-22T13:39:35.418827+00:00",
+    "last_viewed_at": "2026-05-22T13:39:35.417378+00:00",
+    "patch_count": 16,
+    "pinned": false,
+    "state": "active",
+    "use_count": 10,
+    "view_count": 10
+  },
+  "logic-quoting": {
+    "archived_at": null,
+    "created_at": "2026-05-22T05:41:32.737833+00:00",
+    "created_by": null,
+    "last_patched_at": "2026-05-22T13:39:42.516108+00:00",
+    "last_used_at": "2026-05-22T14:38:23.973692+00:00",
+    "last_viewed_at": "2026-05-22T14:38:23.972299+00:00",
+    "patch_count": 23,
+    "pinned": false,
+    "state": "active",
+    "use_count": 10,
+    "view_count": 10
+  },
+  "read-image": {
+    "archived_at": null,
+    "created_at": "2026-05-22T14:41:43.372586+00:00",
+    "created_by": null,
+    "last_patched_at": "2026-05-22T14:41:43.372604+00:00",
+    "last_used_at": null,
+    "last_viewed_at": null,
+    "patch_count": 1,
+    "pinned": false,
+    "state": "active",
+    "use_count": 0,
+    "view_count": 0
+  }
+}
