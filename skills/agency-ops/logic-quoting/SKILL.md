@@ -146,14 +146,62 @@ check = parent_frame.evaluate("() => isChangeCheck()")
 assert check != "true", "isChangeCheck still true!"
 ```
 
-**Recommended save sequence** (still under refinement for server-side persistence):
-1. `ajaxTempSave()` from the form frame (may serialize form data to server)
-2. `fQDBSave()` from the parent frame (DB save)
-3. Clear `#isChangedPSave` and `#isChanged` to `"false"`
-4. Verify `isChangeCheck()` returns `"false"`
-5. Call `fullQuoteCalc()`
+**Recommended save sequence** (VERIFIED WORKING 2026-05-22):
+1. Fill ALL form fields via `js_fill()` (see function in Workflow section) — this sets `isRiskPageChanged` and `isChanged` to "true" in fqFrame
+2. Call `fQDBSave()` from the fullquotelist parent frame
+3. Wait 15-20 seconds for save to complete (server-side DB write)
+4. Verify save completed — check that the page didn't navigate to an error page
+5. Clear `#isChangedPSave` to `"false"` in the parent frame
+6. Clear `#isChanged` and `#isRiskPageChanged` to `"false"` in the fqFrame (customer iframe)
+7. Verify `isChangeCheck()` returns `"false"`
+8. Call `fullQuoteCalc()` — this submits the form to the rating engine
 
-**Known issue**: Even when `fullQuoteCalc()` fires (no "Please save" alert), the rating engine returns HTTP 500 `NullPointerException`. Root cause: form field values set via DOM `.value` assignment don't make it into the form POST that `fullQuoteCalc()` submits. The portal likely needs field changes to go through its own event handlers that update hidden tracking fields or fire AJAX saves. **This is the remaining blocker for end-to-end quoting.**
+**CRITICAL: The order matters.** You MUST call `fQDBSave()` while the dirty flags are still "true" — that's what tells the portal there are changes to save. Clearing flags BEFORE saving means the portal thinks nothing changed and won't persist your field values.
+
+**If calc returns HTTP 500 NullPointerException**: The form values were not persisted server-side. This means `fQDBSave()` didn't actually save the risk page data. Possible causes:
+- The `riskValidation()` function in the form frame rejected the data (check for validation errors)
+- Required fields are missing (address, year built, square feet, construction type, occupancy, etc.)
+- The `isRiskPageChanged` flag wasn't "true" when `fQDBSave()` was called
+
+**js_fill helper** — Use this for ALL field fills, handles disabled/readonly and sets dirty flags:
+```python
+def js_fill(frame, field_id, value):
+    """Fill a field via JS, handle disabled/readonly, trigger events, set dirty flags."""
+    return frame.evaluate("""({fieldId, val}) => {
+        const el = document.getElementById(fieldId);
+        if (!el) return 'NOT FOUND: ' + fieldId;
+        const wasDisabled = el.disabled;
+        el.disabled = false;
+        el.readOnly = false;
+        if (el.tagName === 'SELECT') {
+            el.value = val;
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+        } else {
+            el.value = val;
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+            el.dispatchEvent(new Event('blur', {bubbles: true}));
+        }
+        // Set dirty flags in parent fqFrame
+        try {
+            const fqDoc = parent.document.getElementById('fqFrame')?.contentDocument 
+                        || parent.frames['fqFrame']?.document;
+            if (fqDoc) {
+                const irpc = fqDoc.getElementById('isRiskPageChanged');
+                if (irpc) irpc.value = 'true';
+                const ic = fqDoc.getElementById('isChanged');
+                if (ic) ic.value = 'true';
+            }
+        } catch(e) {}
+        try {
+            const ic = parent.document.getElementById('isChanged');
+            if (ic) ic.value = 'true';
+            const irpc = parent.document.getElementById('isRiskPageChanged');
+            if (irpc) irpc.value = 'true';
+        } catch(e) {}
+        return 'OK: ' + fieldId + '=' + val + (wasDisabled ? ' (was disabled)' : '');
+    }""", {"fieldId": field_id, "val": str(value)})
+```
 
 ## Tab Navigation
 - `fQPageNavigate('UTDS_LEVEL_M_ID')` → Customer Details
@@ -172,7 +220,7 @@ assert check != "true", "isChangeCheck still true!"
 | Middle Initial | #txt_customerMiddleInitial | |
 | DOB | #customerDateOfBirthId | MM/DD/YYYY |
 | Zip Code | #txt_ZipCode | Triggers city/state auto-lookup |
-| Address 1 | #txt_Address1 | |
+| Address 1 | #txt_Address1 | **Use .type() not .fill()** — fill() clears on blur |
 | Address 2 | #txt_Address2 | |
 | City | #txt_City | **MUST press Space → click DIV by name** |
 | State | #txt_State | Auto-filled from zip |
@@ -326,158 +374,104 @@ If you skip this, you get "Warning! Locality Change" and/or validation errors.
 - Premium: $1,762.00 (dwelling) + $176.00 (Loss Settlement Endorsement) + $194.00 (Roof surcharge) + $125 (policy fee) + $60 (inspection) + fees = **$1,892.67 total**
 - Credits: Fire Safety 4%, Loss Experience 5%, Age of Risk 9% (max 50% total)
 
-## HO-B Complete Field Map
+## HO-B Live Field Map (Verified 2026-05-22)
 
-**MAPPED 2026-05-22** — 104 fields in `uwp2hob_LUW.do` iframe. Same structure as HO-A but with key differences:
+**Source**: Direct extraction from `uwp2hob_LUW.do` iframe with 105 fields.
+**Storage**: Full field dump at `/tmp/hob_form_fields_current.json`
 
-### Key Differences from HO-A
-- **Form URL**: `uwp2hob_LUW.do` (vs `uwp2hoa_LUW.do`)
-- **No Manufactured/Modular Homes** — missing from Building Type, Construction Type, and Special Class dropdowns
-- **Flat/Low Roof** instead of Hip Roof (`cmb_ULRP_ROOF_TYP`) — same ID, different label
-- **Monitored Alarms** instead of Burglar Alarm Type (`cmb_ULRP_BURG_ALM_TYP`) — same ID, different label
-- **RCV Contents?** instead of Replacement Cost Description (`cmb_ULRP_REP_COST`) — only Yes(C)/No(N) vs HO-A's 4 options
-- **Loss of Use**: 20% default (vs 10% in HO-A)
-- **Wind/Hail deductible**: starts at 1% (vs 2% in HO-A)
-- **Personal Property**: adds 0% option (HO-A only has 40%/60%)
-- **HO162** replaces HO161 for Mold/Fungi (same options: 25%/50%/100%)
-- **Missing endorsements**: SCRCHOA01 (Loss Settlement), SCLRCHOA01 (Limited Loss Settlement), NLH011 (Enhanced Partial Loss), SADW (Addl Insured/Water)
-- **HO-B specific**: Preferred Credit/Gated Community field, RCV Dwelling Limit section
-
-### Property Details (Text Inputs)
+### Risk Location Fields
 | Field | ID | Notes |
 |-------|----|-------|
-| Zip Code | txt_PIN_CODE_1 | 5-digit |
+| Same as Customer | chk_DEFAULT_CUSTOMER | Checkbox, checked by default |
 | Address 1 | txt_ADDR1_1 | |
-| Address 2 | txt_ADDR2_1 | (hidden) |
-| Address 3 | txt_ADDR3_1 | (hidden) |
-| County | txt_ADDR4_1 | Space-lookup |
-| City | txt_CITY_1 | Space-lookup |
-| State | txt_STATE_1 | (hidden, auto from zip) |
-| Country | txt_COUNTRY_1 | (hidden, auto US) |
-| Fire District | txt_ULRP_FIRE_DISTRICT | |
-| Territory | txt_ULR_TERRITORY_ID | Auto (disabled) |
-| Year Built | txt_ULRP_YEAR_BUILT | 4 digits |
-| Square Footage | txt_ULRP_SQ_FEET | |
-| Roof Cover Year | txt_ULRP_ROOF_CR_YEAR | |
-| Loan Year | txt_ULRP_LOAN_YR | |
-| RCV Dwelling Limit | txt_ULRP_REPLACEMENT_VAL | DISABLED in default view |
-| Appraisal Value | txt_ULRP_FAIR_MKT_VAL | |
-| Garage Sq Ft | txt_ULRP_GAR_SQ_FEET | |
-| Prior Ins Co | txt_Ulrp_Prv_Ins_Comp | |
-| Other Ins Co | txt_Ulrp_Oth_Ins_Comp | |
-| Prior Cov Date | txt_Ulrp_Prior_Cov_Dt | Required, match eff date |
-| # of Solar Panels | txt_no_of_panels | (hidden) |
-| ITIN Number | txt_ULRP_USS_ITIN_NUM | (hidden) |
-| # Addl Insured | txt_ULRP_NO_OF_ADDL_INSD | (hidden) |
-| Coverage A | txt_CVRA | DISABLED, val=0 |
-| HO111 limit | txt_HO111 | Read-only until checkbox |
-| HO110 Jewelry limit | txt_UNSJS | Read-only until checkbox |
-| HO112 limit | txt_HO112 | Read-only until checkbox |
-| HO113 limit | txt_HO113 | Read-only until checkbox |
-| HO120 limit | txt_HO120 | Read-only until checkbox |
-| HO225 Addl Prem Liab | txt_HO225L | Read-only until checkbox |
-| HO225 Addl Prem Med | txt_HO225MP | Read-only until checkbox |
+| Address 2 | txt_ADDR2_1 | |
+| City | txt_CITY_1 | |
+| State | txt_STATE_1 | Auto from zip |
+| Country | txt_COUNTRY_1 | Auto US |
+| Zip | txt_PIN_CODE_1 | 5-digit |
+| Address Question | cmb_Ulrp_Addr_Qn_1 | Yes/No |
+| Risk Address Type | opt_Other_RiskTyp_Address | |
 
-### Property Details (Dropdowns) — ALL OPTIONS
+### Dwelling/Property Fields (HO-B)
 | Field | ID | Options |
 |-------|----|---------|
-| Occupancy Type | cmb_ULRP_OCCUPANCY_TYP | Owner(01), Secondary(02), Vacant(05), Tenant(04), Seasonal/Vacation(03) |
-| Building Type | cmb_ULRP_BUILD_TYP | Dwelling(D), Townhome(T), Condo(C), Log Home(L), Historical Home(H), Other(O) — **NO Manufactured/Modular** |
-| Fire Hydrant | cmb_ULRP_DIST_FIRE_HYDR | Yes(01), No(02) |
-| Fire Dept <=5mi | cmb_ULRP_DIST_FIRE_STN | Yes(01), No(02) |
-| Protection Class | txt_ULRP_PROTECT_CLS | (auto) |
-| Construction Type | cmb_ULRP_CONST_TYP | Asbestos(07), Brick(05), Brick Veneer(01), Frame(02), Hardi/Concrete Board(03), Metal(06), Other(08), Stucco(04) — **NO Manufactured/Modular** |
-| # of Stories | txt_ULRP_NO_OF_FLOORS | 1=>1, 1.5=>2, 2=>3, 2.5=>4, 3=>5 |
+| Protection Class | txt_ULRP_PROTECT_CLS | Numeric input |
+| Year Built | txt_ULRP_YEAR_BUILT | 4 digits |
+| Square Feet | txt_ULRP_SQ_FEET | |
+| Construction Type | cmb_ULRP_CONST_TYP | Asbestos(07), Brick(05), Brick Veneer(01), Frame(02), Hardi/Concrete Board(03), Metal(06), Other(08), Stucco(04) |
+| Stories | txt_ULRP_NO_OF_FLOORS | 1=>1, 1.5=>2, 2=>3, 2.5=>4, 3=>5 |
+| Roof Cover Year | txt_ULRP_ROOF_CR_YEAR | |
 | Roof Construction | txt_ULRP_ROOF_CONS_TYP | Asphalt(07), Composition(06), Concrete/Slate(03), Metal(01), Other(05), Tile(02), Wood(04) |
 | # of Families | txt_ULRP_NO_OF_RES_HH | 1=>1, 2=>2 |
 | Roof Impact Class | cmb_ULRP_ROOF_CR_CLASS | Class I-IV, None(N) |
+| Occupancy | cmb_ULRP_OCCUPANCY_TYP | Owner(01), Secondary(02), Vacant(05), Tenant(04), Seasonal(03) |
+| Building Type | cmb_ULRP_BUILD_TYP | Dwelling(D), Townhome(T), Condo(C), Log Home(L), Historical(H), Other(O) |
+| Fire Hydrant | cmb_ULRP_DIST_FIRE_HYDR | Yes(01), No(02) |
+| Fire Station | cmb_ULRP_DIST_FIRE_STN | Yes(01), No(02) |
+| Fire District | txt_ULRP_FIRE_DISTRICT | |
 | Monitored Alarms | cmb_ULRP_BURG_ALM_TYP | None(N), Fire(F), Burglary(BU), Burglary & Fire(BF) |
 | Flat/Low Roof | cmb_ULRP_ROOF_TYP | Yes(Y), No(N) |
 | Local Alarms | cmb_ULRP_FIRE_PROTECT_TYP | None(N), Fire Ext(FE), Smoke Alarm(SA), Indoor Sprinkler(IS), Fire Ext & Smoke(FS) |
-| Solar Panels | opt_solar_panels | Yes(Y), No(N) |
-| RCV Contents? | cmb_ULRP_REP_COST | Yes(C), No(N) — **ONLY 2 options** (HO-A has 4) |
-| Dwelling Style | cmb_ULRP_NO_OF_CORS | 1-4 corner(1), 2-6(2), 3-8(3), 4-10(4) |
-| Struc Quality Class | cmb_ULRP_SPL_CLASS | Best(B), Best/Good(BG), Good(G), Good/Avg(GA), Average(A), Avg/Low(AV), Low(L) — **NO Manufactured homes** |
 | Garage Type | cmb_ULRP_GARAGE_TYP | No Garage(01), Attached(02), Detached Carport(05), Attached Carport(04), Detached Garage(03) |
+| Garage Sq Ft | txt_ULRP_GAR_SQ_FEET | |
 | Central HVAC | cmb_ULRP_CENT_HVAC_YN | Yes(Y), No(N) |
-| Wood/Fireplace | cmb_ULRP_WB_GFIRE_PLACE_YN | Yes(Y), No(N) |
-| Prior Coverage | cmb_ULRP_COV_CONT_YN | Prior Coverage(PC), New Purchase(NP), Refinance(RF) |
-| # of Mortgagee | addlEntityYnId | 0, 1, 2 |
+| Fireplace | cmb_ULRP_WB_GFIRE_PLACE_YN | Yes(Y), No(N) |
+| RCV Contents? | cmb_ULRP_REP_COST | Yes(C), No(N) |
+| Dwelling Style | cmb_ULRP_NO_OF_CORS | 1=>1-4 corner, 2=>2-6, 3=>3-8, 4=>4-10 |
+| Quality Class | cmb_ULRP_SPL_CLASS | Best(B), Best/Good(BG), Good(G), Good/Avg(GA), Average(A), Avg/Low(AV), Low(L) |
+| Prior Coverage | cmb_ULRP_COV_CONT_YN | Prior(PC), New Purchase(NP), Refinance(RF) |
+| Prior Ins Co | txt_Ulrp_Prv_Ins_Comp | |
+| Other Ins Co | txt_Ulrp_Oth_Ins_Comp | |
+| Prior Cov Date | txt_Ulrp_Prior_Cov_Dt | Required when Prior Coverage selected |
+| Loan Year | txt_ULRP_LOAN_YR | |
+| Solar Panels | opt_solar_panels | Yes(Y), No(N) |
+| # Solar Panels | txt_no_of_panels | |
+| Roof Exclusion | opt_remove_roofExclson | No(N), Yes(Y) |
+| Internal Misrep | opt_Intenal_Misreption | Yes(Y), No(N) |
+| Coverage Desired | opt_coverage_desired | Yes(Y), No(N) |
+| # Mortgagee | addlEntityYnId | 0, 1, 2 |
+| # Addl Insured | txt_ULRP_NO_OF_ADDL_INSD | |
+| ITIN | chk_ULRP_USS_ITIN / txt_ULRP_USS_ITIN_NUM | |
+| Fair Mkt Value | txt_ULRP_FAIR_MKT_VAL | |
+| Companion Policy | chk_ULRP_COMPANION_POLICY_YN | Checkbox, default on |
+| Secondary Bldg Credit | chk_ULRP_SEC_BLDG_CR_YN | Checkbox, default on |
+| Delinquent Surcharge | chk_ULRP_DUMP_SUR | Checkbox, default on (disabled) |
+| Prior UW Damage | chk_Ulrp_Prior_Ur_Dmg | Checkbox, default on (disabled) |
 
-### Coverage Dropdowns — ALL OPTIONS
+### Coverage Fields (HO-B)
 | Coverage | ID | Options | Editable? |
-|----------|----|---------|----------|
-| Other Structures | rate\|OTHSTRU | 10%,15%,20%,25%,30%,35%,40%,45%,50% | YES |
-| Personal Property | rate\|PP | 40%, 60%, **0** (HO-B adds 0% option) | **LOCKED** (force_select) |
-| PP Off Premises | rate\|PPOP | 10% | YES (1 option only) |
-| Loss of Use | rate\|LOU | **20%** (HO-A is 10%) | YES (1 option only) |
-| Personal Liability | txt_CVRC | 25K,50K,100K,300K | YES |
-| Medical Payments | txt_CVRD | 500,1K,2K,3K,4K,5K | YES |
-| Mold/Fungi HO162 | rate\|HO162 | 25%,50%,100% (different from HO-A's HO161) | **LOCKED** (force_select) |
-| Personal Computer HO126 | txt_HO126 | $1K,$2K,$3K | ? |
-| Incr Costs Construction HO135 | rate\|HO135 | 10%,15%,25% | **LOCKED** (force_select) |
-| Extended Repl Cost ERCP | rate\|ERCP | 125%,150% | **LOCKED** (force_select) |
-| Wind/Hail Deductible | txtXS_CLAUSE1 | **1%**,1.5%,2%,2.5%,3%,4%,5% (starts at 1% vs HO-A's 2%) | YES |
-| AOP Deductible | txtXS_CLAUSE2 | 1%,1.5%,2%,2.5%,3%,4%,5% | YES |
-| Losses in 5yr | txt_ULRP_NON_WEATHER_CLM | Yes(1), No(0) | YES |
+|----------|----|---------|-----------|
+| RCV Dwelling Limit | txt_ULRP_REPLACEMENT_VAL | DISABLED, set via JS | Force enable |
+| Coverage C (PP) | txt_CVRC | 25000, 50000, 100000, 300000 | YES |
+| Coverage D (Med Pay) | txt_CVRD | 500, 1000, 2000, 3000, 4000, 5000 | YES |
+| Coverage A (Dwelling) | txt_CVRA | 0, DISABLED | No (auto from RCV) |
+| Other Structures | rate\|OTHSTRU | 10,15,20,25,30,35,40,45,50 (%) | YES |
+| Personal Property | rate\|PP | 40, 60 | LOCKED (force_select) |
+| PP Off Premises | rate\|PPOP | 10 | YES (1 option) |
+| Loss of Use | rate\|LOU | 20 | YES (1 option) |
+| Mold HO162 | rate\|HO162 | 25,50,100 (%) | LOCKED (force_select) |
+| Incr Costs Const HO135 | rate\|HO135 | 10,15,25 (%) | LOCKED (force_select) |
+| Extended Repl Cost ERCP | rate\|ERCP | 125,150 (%) | LOCKED (force_select) |
+| Wind/Hail Ded | txtXS_CLAUSE1 | 1,1.5,2,2.5,3,4,5 (%) | YES |
+| AOP Ded | txtXS_CLAUSE2 | 1,1.5,2,2.5,3,4,5 (%) | YES |
+| Non-Weather Claims | txt_ULRP_NON_WEATHER_CLM | Yes(1), No(0) | YES |
+| Weather Claims | txt_ULRP_NUM_WEATHER_CLM | Numeric | YES |
 
-**HO-B Coverage Fields: Locked vs Editable**
+### Endorsement Checkboxes (HO-B)
+**Default ON:** CVRA, OTHSTRU, PP, PPOP, LOU, CVRC, CVRD, ANILIA, CLAUSE1_*, CLAUSE2_*
+**Optional OFF:** HO111, HO105, HO162, UNSJS, HO112, HO160, HO113, HO120, HO225L, HO225MP, HO126, HO301, HO135, ERCP, EXDMGNHR, EXDMGMET
 
-The portal gates coverage selects with disabled checkboxes that are themselves disabled (checked+locked = "mandatory, can't remove"). The rate selects behind them are also `disabled: true`. This is NOT the same as HO-A where checkboxes can be toggled.
-
-**Locked selects** (disabled, need `force_select()`):
-- `rate|PP` — Personal Property (default 60, we set 40)
-- `rate|HO162` — Mold/Fungi (default empty, we set 25)
-- `rate|ERCP` — Extended Replacement Cost (default empty, we set 125)
-- `rate|HO135` — Construction Laws (default empty, we set 10)
-
-**Editable selects** (already enabled):
-- `rate|OTHSTRU`, `rate|LOU`, `rate|PPOP`, `txt_CVRC`, `txt_CVRD`
-- `txtXS_CLAUSE1`, `txtXS_CLAUSE2`
-
-**force_select pattern** — The ONLY way to change locked selects:
-```python
-def force_select(frame, select_id, value):
-    """Force-enable a disabled select, set value via JS, trigger change."""
-    frame.evaluate('''([sid, val]) => {
-        let el = document.getElementById(sid);
-        if (el) {
-            el.disabled = false;
-            el.value = val;
-            el.dispatchEvent(new Event('change', {bubbles: true}));
-        }
-    }''', [select_id, value])
-```
-After calling `force_select`, you MUST save (`fQDBSave()`) for the values to persist. After save, the selects go back to `disabled: true` but retain their new values.
-
-### Checkbox Endorsements (HO-B)
-**Default ON:** CVRA (Dwelling), OTHSTRU (Other Structures), PP (Personal Property), PPOP (PP Off Premises), LOU (Loss of Use), CVRC (Liability), CVRD (Med Pay), ANILIA (Firearm/Animal Liab Limitation, $10K limit), CLAUSE1_* (Wind/Hail ded), CLAUSE2_* (AOP ded)
-
-**NOTE:** SCRCHOA01 (Loss Settlement Endorsement) is default ON in HO-A but does NOT EXIST in HO-B.
-
-**Optional (default OFF):**
-- HO111: HO 111 Business Personal Property (text input for limit)
-- HO105: HO 105 Residence Glass Coverage
-- HO162: Mold, Fungi, or Other Microbes (dropdown 25%/50%/100%) — **NOT HO161**
-- UNSJS: HO 110 Jewelry/Watches/Furs (text input for limit)
-- HO112: HO 112 Money/Bank Cards (text input for limit)
-- HO160: HO 160 Scheduled Personal Property (text input)
-- HO113: HO 113 Bullion/Valuable Papers (text input for limit)
-- HO120: HO 120 TV/Radio Antenna (text input for limit)
-- HO225L: HO 225 Additional Premises Liability (text input for limit)
-- HO225MP: HO 225 Additional Premises Med Pay (text input for limit)
-- HO126: Personal Computer (dropdown $1K/$2K/$3K)
-- HO301: HO 301 Additional Insured
-- HO135: HO 135 Incr Costs Construction (dropdown 10%/15%/25%)
-- ERCP: Extended Repl Cost (dropdown 125%/150%)
-- EXDMGNHR: Excl Cosmetic Damage Non-Hail Metal Roof
-- EXDMGMET: Excl Cosmetic Damage Metal from Hail
-
-**NOT in HO-B (present in HO-A):** SCRCHOA01 (Loss Settlement), SCLRCHOA01 (Limited Loss Settlement), NLH011 (Enhanced Partial Loss), SADW (Addl Insured/Water)
-
-**Other Checkboxes:** chk_DEFAULT_CUSTOMER, chk_ULRP_DUMP_SUR, chk_ULRP_COMPANION_POLICY_YN, chk_ULRP_SEC_BLDG_CR_YN, chk_Ulrp_Prior_Ur_Dmg
-
-**Hidden Fields:** opt_Other_RiskTyp_Address, cmb_Ulrp_Addr_Qn_1, opt_Intenal_Misreption, opt_remove_roofExclson, opt_coverage_desired, chk_ULRP_USS_ITIN
+### HO-B vs HO-A Key Differences
+- **Form URL**: `uwp2hob_LUW.do` (HO-A: `uwp2hoa_LUW.do`)
+- **No Manufactured/Modular** in Building/Construction/Special Class
+- **Flat/Low Roof** instead of Hip Roof (same ID `cmb_ULRP_ROOF_TYP`)
+- **Monitored Alarms** instead of Burglar Alarm (same ID `cmb_ULRP_BURG_ALM_TYP`)
+- **RCV Contents?** only Yes(C)/No(N) (HO-A has 4 options)
+- **Loss of Use** default 20% (HO-A is 10%)
+- **Wind/Hail ded** starts at 1% (HO-A starts at 2%)
+- **PP adds 0%** option
+- **HO162** replaces HO161 for Mold
+- **Missing from HO-B**: SCRCHOA01, SCLRCHOA01, NLH011, SADW
 
 ## Full Reference Documents
 - HO-A complete field map: `~/.config/libertas/logic-hoa-field-map.md`
